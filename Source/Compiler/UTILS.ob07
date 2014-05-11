@@ -1,0 +1,467 @@
+﻿(*
+    Copyright 2013 Krotov Anton
+
+    This file is part of Compiler.
+
+    Compiler is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Compiler is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Compiler. If not, see <http://www.gnu.org/licenses/>.
+*)
+
+MODULE UTILS;
+
+IMPORT sys := SYSTEM, API;
+
+CONST
+
+  OS* = API.OS;
+  Slash* = API.Slash;
+  Ext* = ".ob07";
+  MAX_PATH = 1024;
+  MAX_PARAM = 1024;
+  Date* = 1385856000; (*2013-12-01*)
+
+TYPE
+
+  STRING* = ARRAY MAX_PATH OF CHAR;
+
+  ITEM* = POINTER TO rITEM;
+
+  rITEM* = RECORD
+    Next*, Prev*: ITEM
+  END;
+
+  LIST* = POINTER TO RECORD
+    First*, Last*: ITEM;
+    Count*: INTEGER
+  END;
+
+VAR
+
+  Params: ARRAY MAX_PARAM, 2 OF INTEGER;
+  hConsoleOutput, hConsoleInput, ParamCount*, Line*, Unit*: INTEGER;
+  win, kos, lnx: BOOLEAN;
+  FileName: STRING;
+
+PROCEDURE SetFile*(F: STRING);
+BEGIN
+  FileName := F
+END SetFile;
+
+PROCEDURE IsInf*(x: LONGREAL): BOOLEAN;
+VAR h, l: SET;
+BEGIN
+  sys.GET(sys.ADR(x), l);
+  sys.GET(sys.ADR(x) + 4, h);
+  RETURN (h * {20..30} = {20..30}) & (h * {0..19} = {}) & (l * {0..31} = {})
+END IsInf;
+
+PROCEDURE GetChar(adr: INTEGER): CHAR;
+VAR res: CHAR;
+BEGIN
+  sys.GET(adr, res)
+  RETURN res
+END GetChar;
+
+PROCEDURE ParamParse(count: INTEGER);
+VAR c: CHAR; cond, p: INTEGER;
+
+  PROCEDURE ChangeCond(A, B, C: INTEGER);
+  BEGIN
+    cond := C;
+    CASE c OF
+    |0X: cond := 6
+    |1X..20X: cond := A
+    |22X: cond := B
+    ELSE
+    END
+  END ChangeCond;
+
+BEGIN
+  p := API.GetCommandLine();
+  cond := 0;
+  WHILE (count < MAX_PARAM) & (cond # 6) DO
+    c := GetChar(p);
+    CASE cond OF
+    |0: ChangeCond(0, 4, 1); IF cond = 1 THEN Params[count, 0] := p END
+    |4: ChangeCond(5, 0, 5); IF cond = 5 THEN Params[count, 0] := p END
+    |1: ChangeCond(0, 3, 1); IF cond IN {0, 6} THEN Params[count, 1] := p - 1; INC(count) END
+    |3, 5: ChangeCond(cond, 1, cond); IF cond = 6 THEN Params[count, 1] := p - 1; INC(count) END
+    ELSE
+    END;
+    INC(p)
+  END;
+  ParamCount := count - 1
+END ParamParse;
+
+PROCEDURE ParamStr*(VAR str: ARRAY OF CHAR; n: INTEGER);
+VAR i, j, len: INTEGER; c: CHAR;
+BEGIN
+  j := 0;
+  IF n <= ParamCount THEN
+    len := LEN(str) - 1;
+    i := Params[n, 0];
+    WHILE (j < len) & (i <= Params[n, 1]) DO
+      c := GetChar(i);
+      IF c # 22X THEN
+        str[j] := c;
+        INC(j)
+      END;
+      INC(i)
+    END
+  END;
+  str[j] := 0X
+END ParamStr;
+
+PROCEDURE GetMem*(n: INTEGER): INTEGER;
+  RETURN API.Alloc(64, n)
+END GetMem;
+
+PROCEDURE CloseF*(F: INTEGER);
+BEGIN
+  API.CloseHandle(F)
+END CloseF;
+
+PROCEDURE Read*(F, Buffer, Count: INTEGER): INTEGER;
+VAR res: INTEGER;
+BEGIN
+  API.ReadFile(F, Buffer, Count, sys.ADR(res), 0)
+  RETURN res
+END Read;
+
+PROCEDURE Write*(F, Buffer, Count: INTEGER): INTEGER;
+VAR res: INTEGER;
+BEGIN
+  API.WriteFile(F, Buffer, Count, sys.ADR(res), 0)
+  RETURN res
+END Write;
+
+PROCEDURE FileSize*(F: INTEGER): INTEGER;
+  RETURN API.FileSize(F)
+END FileSize;
+
+PROCEDURE CharC*(x: CHAR);
+VAR res: INTEGER;
+BEGIN
+  IF win OR lnx THEN
+    res := Write(hConsoleOutput, sys.ADR(x), 1)
+  ELSIF kos THEN
+    API.DebugMsg(sys.ADR(x), 0)
+  END
+END CharC;
+
+PROCEDURE Int*(x: INTEGER);
+VAR i: INTEGER; buf: ARRAY 11 OF INTEGER;
+BEGIN
+  i := 0;
+  REPEAT
+    buf[i] := x MOD 10;
+    x := x DIV 10;
+    INC(i)
+  UNTIL x = 0;
+  REPEAT
+    DEC(i);
+    CharC(CHR(buf[i] + ORD("0")))
+  UNTIL i = 0
+END Int;
+
+PROCEDURE Ln*;
+BEGIN
+  CharC(0DX);
+  CharC(0AX)
+END Ln;
+
+PROCEDURE OutString*(str: ARRAY OF CHAR);
+VAR s: STRING; n: INTEGER;
+BEGIN
+  IF win OR lnx THEN
+    n := Write(hConsoleOutput, sys.ADR(str), LENGTH(str))
+  ELSIF kos THEN
+    API.DebugMsg(sys.ADR(str), 0)
+  END
+END OutString;
+
+PROCEDURE ErrMsg*(code: INTEGER);
+BEGIN
+  OutString("error: "); Int(code); Ln;
+END ErrMsg;
+
+PROCEDURE ErrMsgPos*(line, col, code: INTEGER);
+VAR s: UTILS.STRING;
+BEGIN
+  OutString("error: "); Int(code); Ln;
+  OutString("file:  "); OutString(FileName); Ln;
+  OutString("line:  "); Int(line); Ln;
+  OutString("pos:   "); Int(col); Ln;
+END ErrMsgPos;
+
+PROCEDURE UnitLine*(newUnit, newLine: INTEGER);
+BEGIN
+  Unit := newUnit;
+  Line := newLine
+END UnitLine;
+
+PROCEDURE min*(a, b: INTEGER): INTEGER;
+VAR Res: INTEGER;
+BEGIN
+  IF a < b THEN
+    Res := a
+  ELSE
+    Res := b
+  END
+  RETURN Res
+END min;
+
+PROCEDURE Align*(n: INTEGER): INTEGER;
+  RETURN (4 - n MOD 4) MOD 4
+END Align;
+
+PROCEDURE CAP(x: CHAR): CHAR;
+BEGIN
+  IF (x >= "a") & (x <= "z") THEN
+    x := CHR(ORD(x) - 32)
+  END
+  RETURN x
+END CAP;
+
+PROCEDURE streq*(a, b: ARRAY OF CHAR): BOOLEAN;
+VAR i: INTEGER;
+BEGIN
+  i := -1;
+  REPEAT
+    INC(i)
+  UNTIL (CAP(a[i]) # CAP(b[i])) OR (a[i] = 0X) OR (b[i] = 0X)
+  RETURN a[i] = b[i]
+END streq;
+
+PROCEDURE concat*(L, R: ARRAY OF CHAR; VAR Res: ARRAY OF CHAR);
+VAR i, j: INTEGER;
+BEGIN
+  i := 0;
+  WHILE (L[i] # 0X) & (i - 1 < LEN(Res)) DO
+    Res[i] := L[i];
+    INC(i)
+  END;
+  j := 0;
+  WHILE (R[j] # 0X) & (j + i - 1 < LEN(Res)) DO
+    Res[j + i] := R[j];
+    INC(j)
+  END;
+  Res[j + i] := 0X
+END concat;
+
+PROCEDURE Push*(this: LIST; item: ITEM);
+BEGIN
+  IF this.Count = 0 THEN
+    this.First := item;
+    item.Prev := NIL
+  ELSE
+    this.Last.Next := item;
+    item.Prev := this.Last
+  END;
+  INC(this.Count);
+  this.Last := item;
+  item.Next := NIL
+END Push;
+
+PROCEDURE Insert*(this: LIST; item, prev: ITEM);
+BEGIN
+  IF prev # this.Last THEN
+    item.Next := prev.Next;
+    item.Prev := prev;
+    prev.Next := item;
+    item.Next.Prev := item;
+    INC(this.Count)
+  ELSE
+    Push(this, item)
+  END
+END Insert;
+
+PROCEDURE Clear*(this: LIST);
+BEGIN
+  this.First := NIL;
+  this.Last := NIL;
+  this.Count := 0
+END Clear;
+
+PROCEDURE CreateList*(): LIST;
+VAR nov: LIST;
+BEGIN
+  NEW(nov)
+  RETURN nov
+END CreateList;
+
+PROCEDURE Revers(VAR str: STRING);
+VAR a, b: INTEGER; c: CHAR;
+BEGIN
+  a := 0;
+  b := LENGTH(str) - 1;
+  WHILE a < b DO
+    c := str[a];
+    str[a] := str[b];
+    str[b] := c;
+    INC(a);
+    DEC(b)
+  END
+END Revers;
+
+PROCEDURE Split*(FName: STRING; VAR Path, Name, Ext: STRING);
+VAR i, j, k: INTEGER;
+BEGIN
+  i := LENGTH(FName) - 1;
+  j := 0;
+  WHILE (i >= 0) & (FName[i] # API.Slash) DO
+    Name[j] := FName[i];
+    DEC(i);
+    INC(j)
+  END;
+  Name[j] := 0X;
+  Revers(Name);
+  j := 0;
+  k := LENGTH(Name) - 1;
+  WHILE (k >= 0) & (Name[k] # ".") DO
+    Ext[j] := Name[k];
+    DEC(k);
+    INC(j)
+  END;
+  IF k >= 0 THEN
+    Name[k] := 0X;
+    Ext[j] := ".";
+    INC(j)
+  ELSE
+    j := 0
+  END;
+  Ext[j] := 0X;
+  Revers(Ext);
+  j := i;
+  FOR i := 0 TO j DO
+    Path[i] := FName[i]
+  END;
+  Path[j + 1] := 0X
+END Split;
+
+PROCEDURE PChar*(s: ARRAY OF CHAR): INTEGER;
+  RETURN sys.ADR(s)
+END PChar;
+
+PROCEDURE LinuxParam;
+VAR p, i, str: INTEGER; c: CHAR;
+BEGIN
+  p := API.GetCommandLine();
+  sys.GET(p, ParamCount);
+  sys.GET(p + 4, p);
+  FOR i := 0 TO ParamCount - 1 DO
+    sys.GET(p + i * 4, str);
+    Params[i, 0] := str;
+    REPEAT
+      sys.GET(str, c);
+      INC(str)
+    UNTIL c = 0X;
+    Params[i, 1] := str - 1
+  END;
+  DEC(ParamCount)
+END LinuxParam;
+
+PROCEDURE Time*;
+VAR sec, dsec: INTEGER;
+BEGIN
+  OutString("elapsed time ");
+  API.Time(sec, dsec);
+  sec := sec - API.sec;
+  dsec := dsec - API.dsec;
+  dsec := dsec + sec * 100;
+  Int(dsec DIV 100); CharC(".");
+  dsec := dsec MOD 100;
+  IF dsec < 10 THEN
+    Int(0)
+  END;
+  Int(dsec); OutString(" sec"); UTILS.Ln
+END Time;
+
+PROCEDURE HALT*(n: INTEGER);
+BEGIN
+  Time;
+  API.ExitProcess(n)
+END HALT;
+
+PROCEDURE MemErr*(err: BOOLEAN);
+BEGIN
+  IF err THEN
+    ErrMsg(72);
+    HALT(1)
+  END
+END MemErr;
+
+PROCEDURE CreateF*(FName: ARRAY OF CHAR): INTEGER;
+VAR res: INTEGER; memerr: BOOLEAN;
+BEGIN
+  IF win THEN
+    res := API.CreateFile(sys.ADR(FName), 0C0000000H, 0, 0, 2, 80H, 0);
+    IF res = -1 THEN
+      res := 0
+    END
+  ELSIF kos THEN
+    res := API.kos_OCFile(FName, 2, memerr);
+    MemErr(memerr)
+  ELSIF lnx THEN
+    res := API.lnx_CreateFile(FName)
+  END
+  RETURN res
+END CreateF;
+
+PROCEDURE OpenF*(FName: ARRAY OF CHAR; Mode: INTEGER): INTEGER;
+VAR ofstr: API.OFSTRUCT; res: INTEGER; memerr: BOOLEAN;
+BEGIN
+  IF win THEN
+    res := API.OpenFile(sys.ADR(FName), ofstr, Mode);
+    IF res = -1 THEN
+      res := 0
+    END
+  ELSIF kos THEN
+    res := API.kos_OCFile(FName, 5, memerr);
+    MemErr(memerr)
+  ELSIF lnx THEN
+    res := API.lnx_OpenFile(FName)
+  END
+  RETURN res
+END OpenF;
+
+PROCEDURE Init;
+VAR p, count: INTEGER;
+
+  PROCEDURE last(VAR p: INTEGER);
+  BEGIN
+    WHILE GetChar(p) # 0X DO INC(p) END;
+    DEC(p)
+  END last;
+
+BEGIN
+  IF win THEN
+    hConsoleOutput := API.GetStdHandle(-11);
+    ParamParse(0)
+  ELSIF kos THEN
+    ParamParse(1);
+    Params[0, 0] := API.GetName();
+    Params[0, 1] := Params[0, 0];
+    last(Params[0, 1])
+  ELSIF lnx THEN
+    hConsoleOutput := API.GetStdHandle(-11);
+    LinuxParam
+  END
+END Init;
+
+BEGIN
+  win := API.OS = "WIN";
+  kos := API.OS = "KOS";
+  lnx := API.OS = "LNX";
+  Init
+END UTILS.
